@@ -1,5 +1,5 @@
 package common;
 
 public enum BuildState {
-    MOVING, READY_FOR_BUILD, REPAIRING, DONE;
+    WAIT_FOR_BUILDER, MOVING, REPAIRING, DONE;
 }

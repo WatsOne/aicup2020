@@ -1,10 +1,13 @@
 import common.BuildState;
 import common.BuildTask;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import model.Action;
@@ -27,9 +30,14 @@ import model.Vec2Int;
 
 public class MyStrategy2 {
 
+    private static final int BUILDERS_MAX = 8;
+
     private Entity[][] entities = null;
 
     Set<Entity> resourceWorkers = new HashSet<>();
+    Set<Entity> buildWorkers = new HashSet<>();
+    Set<Entity> allBuilders = new HashSet<>();
+
     Set<BuildTask> buildTasks = new HashSet<>();
 
     Integer resourceCount = 0;
@@ -45,8 +53,6 @@ public class MyStrategy2 {
         var populationMax = 0;
         var populationUse = 0;
 
-        var builders = getBuilders();
-
         for (Entity entity : playerView.getEntities()) {
             if (entity.getPlayerId() == null || entity.getPlayerId() != playerView.getMyId()) {
                 continue;
@@ -55,59 +61,93 @@ public class MyStrategy2 {
             populationMax += playerView.getEntityProperties().get(entity.getEntityType()).getPopulationProvide();
             populationUse += playerView.getEntityProperties().get(entity.getEntityType()).getPopulationUse();
 
-            updatePositionForBuilders(entity);
-
             switch (entity.getEntityType()) {
                 case BUILDER_UNIT:
-                    if (!builders.contains(entity)) {
+                    allBuilders.add(entity);
+                    if (!buildWorkers.contains(entity)) {
                         resourceWorkers.add(entity);
                     }
+                    updatePositions(entity);
                     break;
                 case BUILDER_BASE:
-                    if (populationUse <= populationMax) {
-                        actionMap.put(entity.getId(), new EntityAction(null, new BuildAction(EntityType.BUILDER_UNIT, new Vec2Int(entity.getPosition().getX() + 5, entity.getPosition().getY() + 1)), null, null));
+                    if (populationUse <= populationMax && resourceWorkers.size() < 35) {
+                        actionMap.put(entity.getId(), new EntityAction(null, new BuildAction(EntityType.BUILDER_UNIT, new Vec2Int(entity.getPosition().getX() + 5, entity.getPosition().getY())), null, null));
+                    } else {
+                        actionMap.put(entity.getId(), new EntityAction(null, null, null,null));
                     }
+                    break;
+                case RANGED_BASE:
+                    if (populationUse <= populationMax) {
+                        actionMap.put(entity.getId(), new EntityAction(null, new BuildAction(EntityType.RANGED_UNIT, new Vec2Int(entity.getPosition().getX() + 5, entity.getPosition().getY())), null, null));
+                    } else {
+                        actionMap.put(entity.getId(), new EntityAction(null, null, null,null));
+                    }
+                    break;
+                case MELEE_UNIT:
+                    actionMap.put(entity.getId(), new EntityAction(new MoveAction(getRandomCorner(), true, true), null, new AttackAction(null, new AutoAttack(playerView.getMaxPathfindNodes(), new EntityType[]{EntityType.MELEE_UNIT, EntityType.RANGED_UNIT, EntityType.BUILDER_UNIT, EntityType.MELEE_BASE, EntityType.RANGED_BASE, EntityType.BUILDER_BASE, EntityType.HOUSE, EntityType.WALL, EntityType.TURRET})), null));
+                    break;
+                case RANGED_UNIT:
+                    actionMap.put(entity.getId(), new EntityAction(new MoveAction(getRandomCorner(), true, true), null, new AttackAction(null, new AutoAttack(playerView.getMaxPathfindNodes(), new EntityType[]{EntityType.MELEE_UNIT, EntityType.RANGED_UNIT, EntityType.BUILDER_UNIT, EntityType.MELEE_BASE, EntityType.RANGED_BASE, EntityType.BUILDER_BASE, EntityType.HOUSE, EntityType.WALL, EntityType.TURRET})), null));
+                    break;
+
             }
         }
 
-        if (resourceCount > 100) {
+        buildWorkers.removeIf(w -> !allBuilders.contains(w));
+
+        if (populationMax - populationUse < 6) {
             findPlaceForHouse().forEach(c -> {
-                if (buildTasks.size() < resourceWorkers.size() / 3) {
-                    var builderPos = findClosestBuildPosition(c, 3, playerView.getMapSize());
-                    if (builderPos != null) {
-                        var builder = resourceWorkers.iterator().next();
-
-                        buildTasks.forEach(t -> {
-                            if (t.getBuildCorner().equals(c)) {
-                                System.out.println("WTF");
-                            }
-                        });
-
-                        if (checkCornerHouse(c)) {
-                            buildTasks.add(new BuildTask(c, builderPos, builder, EntityType.HOUSE));
-                            resourceWorkers.remove(builder);
-                        }
-                    }
+                var exist = buildTasks.stream().filter(t -> t.getBuildCorner().equals(c)).findAny();
+                if (exist.isEmpty()) {
+                    buildTasks.add(new BuildTask(c, EntityType.HOUSE));
                 }
             });
         }
+
+        if (!buildTasks.isEmpty() && buildWorkers.size() <= BUILDERS_MAX) {
+            while (buildWorkers.size() < Math.min(resourceWorkers.size() / 4,  BUILDERS_MAX)) {
+                var worker = resourceWorkers.iterator().next();
+                resourceWorkers.remove(worker);
+                buildWorkers.add(worker);
+            }
+        }
+
+        Set<Entity> busyBuilders = buildTasks.stream().flatMap(t -> t.getOnlyBuilders().stream()).collect(Collectors.toSet());
+        Set<Entity> freeBuilders = new HashSet<>(buildWorkers);
+        freeBuilders.removeIf(busyBuilders::contains);
+        buildTasks.stream().filter(t -> t.getState() != BuildState.DONE).sorted(Comparator.reverseOrder()).forEach(t -> {
+            while (t.getBuilders().size() < 2 && !freeBuilders.isEmpty()) {
+                var builder = freeBuilders.iterator().next();
+                var builderPos = findClosestBuildPosition(t.getBuildCorner(), 3, playerView.getMapSize(), t.getOnlyPositions());
+                if (builderPos != null) {
+                    t.setBuilder(builder, builderPos);
+                    freeBuilders.remove(builder);
+                }
+            }
+        });
 
         buildTasks.forEach(t -> {
             t.updateStatus(entities, playerView);
             switch (t.getState()) {
                 case MOVING:
-                    actionMap.put(t.getBuilder().getId(), new EntityAction(new MoveAction(t.getBuildPosition(), false, false), null, null, null));
-                    break;
-                case READY_FOR_BUILD:
-                    actionMap.put(t.getBuilder().getId(), new EntityAction(null, new BuildAction(EntityType.HOUSE, t.getBuildCorner()), null, null));
+                    t.getBuilders().forEach(b -> {
+                        actionMap.put(b.getEntity().getId(), new EntityAction(new MoveAction(b.getBuildPosition(), false, false), new BuildAction(EntityType.HOUSE, t.getBuildCorner()), null, null));
+                    });
                     break;
                 case REPAIRING:
-                    actionMap.put(t.getBuilder().getId(), new EntityAction(null, null, null, new RepairAction(t.getBuildId())));
+                    t.getBuilders().forEach(b -> {
+                        actionMap.put(b.getEntity().getId(), new EntityAction(new MoveAction(b.getBuildPosition(), false, false), new BuildAction(EntityType.HOUSE, t.getBuildCorner()), null, new RepairAction(t.getBuildId())));
+                    });
                     break;
             }
         });
 
-        updateBuildersPosition(playerView.getMapSize());
+        if (buildTasks.isEmpty()) {
+            resourceWorkers.addAll(buildWorkers);
+            buildWorkers.clear();
+        }
+
+        //updateBuildersPosition(playerView.getMapSize());
         cleanBuildTask();
         activateResourceWorkers(actionMap);
 
@@ -118,12 +158,17 @@ public class MyStrategy2 {
         buildTasks.removeIf(t -> t.getState() == BuildState.DONE);
     }
 
-    private void updatePositionForBuilders(Entity entity) {
-        buildTasks.forEach(t -> t.updateBuilderPosition(entity));
-    }
-
-    private Set<Entity> getBuilders() {
-        return buildTasks.stream().map(BuildTask::getBuilder).collect(Collectors.toSet());
+    private void updatePositions(Entity entity) {
+        resourceWorkers.forEach(w -> {
+            if (w.equals(entity)) {
+                w.setPosition(entity.getPosition());
+            }
+        });
+        buildWorkers.forEach(w -> {
+            if (w.equals(entity)) {
+                w.setPosition(entity.getPosition());
+            }
+        });
     }
 
     private void activateResourceWorkers(HashMap<Integer, EntityAction> actionHashMap) {
@@ -131,41 +176,56 @@ public class MyStrategy2 {
                 actionHashMap.put(w.getId(), new EntityAction(null, null, new AttackAction(null, new AutoAttack(80, new EntityType[]{EntityType.RESOURCE})), null)));
     }
 
-    private void updateBuildersPosition(int mapSize) {
-        buildTasks.forEach(t -> {
-            var currentPos = t.getBuildPosition();
-            if (!cellIsFree(currentPos.getX(), currentPos.getY(), mapSize)) {
-                var newPosition = findClosestBuildPosition(t.getBuildCorner(), 3, mapSize);
-                if (newPosition != null) {
-                    t.setBuildPosition(newPosition);
-                }
-            }
-        });
+    private Vec2Int getRandomCorner() {
+        var r = ThreadLocalRandom.current().nextInt(0,3);
+        if (r == 0) {
+            return new Vec2Int(79, 79);
+        } else if (r == 1) {
+            return new Vec2Int(79, 0);
+        } else {
+            return new Vec2Int(0, 79);
+        }
     }
 
-    private Vec2Int findClosestBuildPosition(Vec2Int buildPosition, int size, int mapSize) {
+//    private void updateBuildersPosition(int mapSize) {
+//        buildTasks.forEach(t -> {
+//            var currentPos = t.getBuildPosition();
+//            if (!cellIsFree(currentPos.getX(), currentPos.getY(), mapSize)) {
+//                var newPosition = findClosestBuildPosition(t.getBuildCorner(), 3, mapSize);
+//                if (newPosition != null) {
+//                    t.setBuildPosition(newPosition);
+//                }
+//            }
+//        });
+//    }
+
+    private Vec2Int findClosestBuildPosition(Vec2Int buildPosition, int size, int mapSize, Set<Vec2Int> occupiedPositions) {
         var y = buildPosition.getY() - 1;
         for (int x = buildPosition.getX(); x < buildPosition.getX() + size; x++) {
-            if (cellIsFree(x, y, mapSize)) {
-                return new Vec2Int(x, y);
+            var res = new Vec2Int(x, y);
+            if (cellIsFree(x, y, mapSize) && !occupiedPositions.contains(res)) {
+                return res;
             }
         }
         y = buildPosition.getY() + size;
         for (int x = buildPosition.getX(); x < buildPosition.getX() + size; x++) {
-            if (cellIsFree(x, y, mapSize)) {
-                return new Vec2Int(x, y);
+            var res = new Vec2Int(x, y);
+            if (cellIsFree(x, y, mapSize) && !occupiedPositions.contains(res)) {
+                return res;
             }
         }
         var x = buildPosition.getX() - 1;
         for (y = buildPosition.getY(); y < buildPosition.getY() + size; y++) {
-            if (cellIsFree(x, y, mapSize)) {
-                return new Vec2Int(x, y);
+            var res = new Vec2Int(x, y);
+            if (cellIsFree(x, y, mapSize) && !occupiedPositions.contains(res)) {
+                return res;
             }
         }
         x = buildPosition.getX() + size;
         for (y = buildPosition.getY(); y < buildPosition.getY() + size; y++) {
-            if (cellIsFree(x, y, mapSize)) {
-                return new Vec2Int(x, y);
+            var res = new Vec2Int(x, y);
+            if (cellIsFree(x, y, mapSize) && !occupiedPositions.contains(res)) {
+                return res;
             }
         }
 
@@ -182,31 +242,26 @@ public class MyStrategy2 {
         return false;
     }
 
-    private boolean checkCornerHouse(Vec2Int pos) {
-        var houseIsInCorner = entities[0][0];
-        if (pos.equals(new Vec2Int(3,0)) || pos.equals(new Vec2Int(0, 3))) {
-            return houseIsInCorner != null && houseIsInCorner.getEntityType() == EntityType.HOUSE;
-        }
-
-        return true;
-    }
-
     private List<Vec2Int> findPlaceForHouse() {
         List<Vec2Int> corners = new ArrayList<>();
-        for (int x = 0; x <= 21; x+=3) {
-            var corner = new Vec2Int(x, 0);
+        var corner = new Vec2Int(0, 0);
+        if (placeIsFree(corner, 3)) {
+            corners.add(corner);
+        }
+        for (int x = 4; x <= 22; x+=3) {
+            corner = new Vec2Int(x, 0);
             if (placeIsFree(corner, 3)) {
                 corners.add(corner);
             }
         }
-        for (int y = 3; y <= 21; y+=3) {
-            var corner = new Vec2Int(0, y);
+        for (int y = 4; y <= 22; y+=3) {
+            corner = new Vec2Int(0, y);
             if (placeIsFree(corner, 3)) {
                 corners.add(corner);
             }
         }
-        for (int y = 4; y <= 21; y+=4) {
-            var corner = new Vec2Int(11, y);
+        for (int y = 5; y <= 22; y+=4) {
+            corner = new Vec2Int(11, y);
             if (placeIsFree(corner, 3)) {
                 corners.add(corner);
             }
@@ -229,7 +284,7 @@ public class MyStrategy2 {
     }
 
     private void updateMatrix(PlayerView playerView) {
-        buildTasks.stream().filter(t -> t.getState() == BuildState.MOVING || t.getState() == BuildState.READY_FOR_BUILD).forEach(t -> {
+        buildTasks.stream().filter(t -> t.getState() == BuildState.MOVING).forEach(t -> {
             var buildCorner = t.getBuildCorner();
             var size = playerView.getEntityProperties().get(t.getType()).getSize();
             var fakeEntity = new Entity();

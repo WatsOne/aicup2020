@@ -1,56 +1,35 @@
 package common;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 import model.Entity;
 import model.EntityType;
 import model.PlayerView;
 import model.Vec2Int;
 
-public class BuildTask {
-    private Entity builder;
+public class BuildTask implements Comparable<BuildTask> {
     private Vec2Int buildCorner;
-    private Vec2Int buildPosition;
     private BuildState state;
     private EntityType type;
     private int buildId;
-    private List<Entity> builders;
 
-    public BuildTask(Vec2Int buildCorner, Vec2Int buildPosition, Entity builder, EntityType type) {
+    private List<BuildPosition> builders = new ArrayList<>();
+
+    public BuildTask(Vec2Int buildCorner, EntityType type) {
         this.buildCorner = buildCorner;
-        this.builder = builder;
-        this.buildPosition = buildPosition;
         this.type = type;
 
-        state = BuildState.MOVING;
-    }
-
-    public void updateBuilderPosition(Entity entity) {
-        if (entity.equals(builder)) {
-            builder.setPosition(entity.getPosition());
-            if (readyForBuild()) {
-                state = BuildState.READY_FOR_BUILD;
-            }
-        }
-    }
-
-    public Entity getBuilder() {
-        return builder;
+        state = BuildState.WAIT_FOR_BUILDER;
     }
 
     public BuildState getState() {
         return state;
     }
 
-    public Vec2Int getBuildPosition() {
-        return buildPosition;
-    }
-
     public Vec2Int getBuildCorner() {
         return buildCorner;
-    }
-
-    private boolean readyForBuild() {
-        return buildPosition.equals(builder.getPosition());
     }
 
     public void updateStatus(Entity[][] map, PlayerView view) {
@@ -73,7 +52,31 @@ public class BuildTask {
         return buildId;
     }
 
-    public void setBuildPosition(Vec2Int buildPosition) {
-        this.buildPosition = buildPosition;
+//    public void setBuildPosition(Vec2Int buildPosition) {
+//        this.buildPosition = buildPosition;
+//    }
+
+    public void setBuilder(Entity entity, Vec2Int position) {
+        if (state == BuildState.WAIT_FOR_BUILDER) {
+            state = BuildState.MOVING;
+        }
+        builders.add(new BuildPosition(entity, position));
+    }
+
+    public List<BuildPosition> getBuilders() {
+        return builders;
+    }
+
+    public Set<Entity> getOnlyBuilders() {
+        return builders.stream().map(BuildPosition::getEntity).collect(Collectors.toSet());
+    }
+
+    public Set<Vec2Int> getOnlyPositions() {
+        return builders.stream().map(BuildPosition::getBuildPosition).collect(Collectors.toSet());
+    }
+
+    @Override
+    public int compareTo(BuildTask o) {
+        return builders.size() - o.getBuilders().size();
     }
 }
