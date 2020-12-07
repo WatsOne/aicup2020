@@ -10,6 +10,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
@@ -28,6 +29,7 @@ import model.Entity;
 import model.EntityAction;
 import model.EntityType;
 import model.MoveAction;
+import model.Player;
 import model.PlayerView;
 import model.PrimitiveType;
 import model.RepairAction;
@@ -52,6 +54,9 @@ public class MyStrategy {
     Integer resourcesTotal = 0;
     float avgResources = 0;
 
+    private boolean firstInit = true;
+    Map<Integer, Vec2Int> playerToCorner = new HashMap<>();
+
     public Action getAction(PlayerView playerView, DebugInterface debugInterface) {
         var actionMap = new HashMap<Integer, EntityAction>();
 
@@ -66,10 +71,56 @@ public class MyStrategy {
         var populationMax = 0;
         var populationUse = 0;
 
+        Vec2Int myCorner = new Vec2Int(0,0);
+
         Set<Entity> busyBuilders = buildTasks.stream().flatMap(t -> t.getOnlyBuilders().stream()).collect(Collectors.toSet());
+
+        Map<Integer, Integer> enemyDistances = new HashMap<>();
+        Map<Integer, Integer> enemyCount = new HashMap<>();
+        Map<Integer, Integer> enemyHouses = new HashMap<>();
 
         Entity builderBase = null;
         Entity meleeBase = null;
+
+        for (Entity entity : playerView.getEntities()) {
+            if (entity.getPlayerId() == null) {
+                continue;
+            }
+            if (entity.getPlayerId() != playerView.getMyId()) {
+                if (firstInit) {
+                    if (playerToCorner.get(entity.getPlayerId()) == null) {
+                        playerToCorner.put(entity.getPlayerId(), defineCorner(entity.getPosition()));
+                    }
+                }
+
+                if (entity.getEntityType() == EntityType.RANGED_UNIT || entity.getEntityType() == EntityType.MELEE_UNIT || entity.getEntityType() == EntityType.BUILDER_UNIT) {
+                    enemyDistances.merge(entity.getPlayerId(), distance(entity.getPosition(), myCorner), Integer::sum);
+                    enemyCount.merge(entity.getPlayerId(), 1, Integer::sum);
+                }
+
+                if (entity.getEntityType() == EntityType.MELEE_BASE || entity.getEntityType() == EntityType.RANGED_BASE || entity.getEntityType() == EntityType.BUILDER_BASE || entity.getEntityType() == EntityType.HOUSE || entity.getEntityType() == EntityType.TURRET || entity.getEntityType() == EntityType.WALL) {
+                    enemyHouses.merge(entity.getPlayerId(), 1, Integer::sum);
+                }
+            }
+        }
+
+        Map<Integer, Float> avgToEnemy = new HashMap<>();
+        for (Player player : playerView.getPlayers()) {
+            if (playerView.getMyId() != player.getId()) {
+                if (enemyCount.get(player.getId()) != null) {
+                    avgToEnemy.put(player.getId(), enemyDistances.get(player.getId()).floatValue() / enemyCount.get(player.getId()));
+                }
+            }
+        }
+
+        var nearestEnemy = avgToEnemy.entrySet().stream().sorted(Map.Entry.comparingByValue()).limit(1).findFirst();
+        Vec2Int attackCorner;
+        if (nearestEnemy.isPresent()) {
+            attackCorner = playerToCorner.get(nearestEnemy.get().getKey());
+        } else {
+            attackCorner = new Vec2Int(79, 79);
+        }
+
         for (Entity entity : playerView.getEntities()) {
             if (entity.getPlayerId() == null || entity.getPlayerId() != playerView.getMyId()) {
                 continue;
@@ -109,11 +160,19 @@ public class MyStrategy {
                     break;
                 case MELEE_UNIT:
                     allMelee.add(entity);
-                    actionMap.put(entity.getId(), new EntityAction(new MoveAction(new Vec2Int(79, 79), true, true), null, new AttackAction(null, new AutoAttack(playerView.getMaxPathfindNodes(), new EntityType[]{EntityType.MELEE_UNIT, EntityType.RANGED_UNIT, EntityType.BUILDER_UNIT, EntityType.MELEE_BASE, EntityType.RANGED_BASE, EntityType.BUILDER_BASE, EntityType.HOUSE, EntityType.WALL, EntityType.TURRET})), null));
+                    if (playerView.getCurrentTick() < 200) {
+                        actionMap.put(entity.getId(), new EntityAction(new MoveAction(new Vec2Int(15, 15), true, true), null, new AttackAction(null, new AutoAttack(20, new EntityType[]{EntityType.MELEE_UNIT, EntityType.RANGED_UNIT, EntityType.BUILDER_UNIT, EntityType.MELEE_BASE, EntityType.RANGED_BASE, EntityType.BUILDER_BASE, EntityType.HOUSE, EntityType.TURRET})), null));
+                    } else {
+                        actionMap.put(entity.getId(), new EntityAction(new MoveAction(attackCorner, true, true), null, new AttackAction(null, new AutoAttack(20, new EntityType[]{EntityType.MELEE_UNIT, EntityType.RANGED_UNIT, EntityType.BUILDER_UNIT, EntityType.MELEE_BASE, EntityType.RANGED_BASE, EntityType.BUILDER_BASE, EntityType.HOUSE, EntityType.TURRET})), null));
+                    }
                     break;
                 case RANGED_UNIT:
                     allRangers.add(entity);
-                    actionMap.put(entity.getId(), new EntityAction(new MoveAction(new Vec2Int(79, 79), true, true), null, new AttackAction(null, new AutoAttack(playerView.getMaxPathfindNodes(), new EntityType[]{EntityType.MELEE_UNIT, EntityType.RANGED_UNIT, EntityType.BUILDER_UNIT, EntityType.MELEE_BASE, EntityType.RANGED_BASE, EntityType.BUILDER_BASE, EntityType.HOUSE, EntityType.WALL, EntityType.TURRET})), null));
+                    if (playerView.getCurrentTick() < 200) {
+                        actionMap.put(entity.getId(), new EntityAction(new MoveAction(new Vec2Int(15, 15), true, true), null, new AttackAction(null, new AutoAttack(20, new EntityType[]{EntityType.MELEE_UNIT, EntityType.RANGED_UNIT, EntityType.BUILDER_UNIT, EntityType.MELEE_BASE, EntityType.RANGED_BASE, EntityType.BUILDER_BASE, EntityType.HOUSE, EntityType.TURRET})), null));
+                    } else {
+                        actionMap.put(entity.getId(), new EntityAction(new MoveAction(attackCorner, true, true), null, new AttackAction(null, new AutoAttack(20, new EntityType[]{EntityType.MELEE_UNIT, EntityType.RANGED_UNIT, EntityType.BUILDER_UNIT, EntityType.MELEE_BASE, EntityType.RANGED_BASE, EntityType.BUILDER_BASE, EntityType.HOUSE, EntityType.TURRET})), null));
+                    }
                     break;
                 case TURRET:
                     actionMap.put(entity.getId(), new EntityAction(null, null, new AttackAction(null, new AutoAttack(playerView.getMaxPathfindNodes(), new EntityType[]{EntityType.MELEE_UNIT, EntityType.RANGED_UNIT, EntityType.BUILDER_UNIT, EntityType.MELEE_BASE, EntityType.RANGED_BASE, EntityType.BUILDER_BASE, EntityType.HOUSE, EntityType.WALL, EntityType.TURRET})), null));
@@ -217,6 +276,7 @@ public class MyStrategy {
         allBuilders.clear();
         allRangers.clear();
         allMelee.clear();
+        firstInit = false;
 //        activateResourceWorkers(actionMap);
 //        resourceWorkers.clear();
 
@@ -412,8 +472,8 @@ public class MyStrategy {
         }
         planPlaces.forEach(c -> {
             Map<Entity, Integer> distanceMap = new HashMap<>();
-            allBuilders.forEach(b -> distanceMap.put(b, distance(new Vec2Int(b.getPosition().getX() + 1, b.getPosition().getY() + 1), c)));
-            List<Entity> closest = distanceMap.entrySet().stream().sorted(Map.Entry.comparingByValue(Comparator.reverseOrder())).limit(3).map(Entry::getKey).collect(Collectors.toList());
+            allBuilders.forEach(b -> distanceMap.put(b, distance(b.getPosition(), new Vec2Int(c.getX() + 1, c.getY() + 1))));
+            List<Entity> closest = distanceMap.entrySet().stream().sorted(Map.Entry.comparingByValue()).limit(3).map(Entry::getKey).collect(Collectors.toList());
             for (int k = 0; k < closest.size(); k++) {
                 var ticks = 0;
                 int[] modifyDistance = new int[k+1];
@@ -457,6 +517,16 @@ public class MyStrategy {
         }
 
         return result;
+    }
+
+    private Vec2Int defineCorner(Vec2Int pos) {
+        if (pos.getX() > 40 && pos.getY() > 40) {
+            return new Vec2Int(79, 79);
+        } else if (pos.getX() > 40 && pos.getY() < 40) {
+            return new Vec2Int(79, 0);
+        } else {
+            return new Vec2Int(0, 79);
+        }
     }
 
     public void debugUpdate(PlayerView playerView, DebugInterface debugInterface) {
