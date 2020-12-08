@@ -3,14 +3,12 @@ import common.BuildState;
 import common.BuildTask;
 import common.FindingPositionResult;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
@@ -42,6 +40,7 @@ public class MyStrategy {
 
     private Entity[][] entities = null;
     private boolean[][] buildPlace = new boolean[40][40];
+    private boolean[][] dangerField = new boolean[80][80];
 
 //    Set<Entity> resourceWorkers = new HashSet<>();
 //    Set<Entity> buildWorkers = new HashSet<>();
@@ -58,6 +57,7 @@ public class MyStrategy {
     Map<Integer, Vec2Int> playerToCorner = new HashMap<>();
 
     public Action getAction(PlayerView playerView, DebugInterface debugInterface) {
+        clearDangerField();
         var actionMap = new HashMap<Integer, EntityAction>();
 
         resourceCount = Stream.of(playerView.getPlayers()).filter(p -> p.getId() == playerView.getMyId()).findFirst().get().getResource();
@@ -67,6 +67,8 @@ public class MyStrategy {
         entities = new Entity[playerView.getMapSize()][playerView.getMapSize()];
         updateMatrix(playerView);
         fillBuildPlace();
+
+        var countOnMyQuarter = 0;
 
         var populationMax = 0;
         var populationUse = 0;
@@ -90,6 +92,13 @@ public class MyStrategy {
                 if (firstInit) {
                     if (playerToCorner.get(entity.getPlayerId()) == null) {
                         playerToCorner.put(entity.getPlayerId(), defineCorner(entity.getPosition()));
+                    }
+                }
+
+                if (entity.getEntityType() == EntityType.RANGED_UNIT || entity.getEntityType() == EntityType.MELEE_UNIT) {
+                    updateDangerField(entity);
+                    if (entity.getPosition().getX() < 40 && entity.getPosition().getY() < 40) {
+                        countOnMyQuarter++;
                     }
                 }
 
@@ -133,7 +142,14 @@ public class MyStrategy {
                 case BUILDER_UNIT:
                     allBuilders.add(entity);
                     if (!busyBuilders.contains(entity)) {
-                        actionMap.put(entity.getId(), new EntityAction(null, null, new AttackAction(null, new AutoAttack(1000, new EntityType[]{EntityType.RESOURCE})), null));
+                        if (inDanger(entity)) {
+                            var freeCell = findNearestFreeCell(entity);
+                            if (freeCell != null) {
+                                actionMap.put(entity.getId(), new EntityAction(new MoveAction(freeCell, false, false), null, null, null));
+                            }
+                        } else {
+                            actionMap.put(entity.getId(), new EntityAction(null, null, new AttackAction(null, new AutoAttack(1000, new EntityType[]{EntityType.RESOURCE})), null));
+                        }
                     }
 //                    if (!buildWorkers.contains(entity)) {
 //                        resourceWorkers.add(entity);
@@ -181,9 +197,14 @@ public class MyStrategy {
             }
         }
 
-        var resourceThreshold = Math.round((float) playerView.getCurrentTick() / 10) + 10;
+        var needMoreWarriors = countOnMyQuarter > allRangers.size() + allMelee.size();
+        var freeSlots = populationMax - populationUse;
+        var slotsEnough = freeSlots >= countOnMyQuarter - (allRangers.size() + allMelee.size());
+
+        var resourceThreshold = Math.round((float) playerView.getCurrentTick() / 10) + 12;
         if (builderBase != null) {
-            if (avgResources < Math.min(resourceThreshold, 50) && allBuilders.size() < 30) {
+            var limit = playerView.getCurrentTick() < 200 ? 23 : 37;
+            if (!needMoreWarriors && /*avgResources < Math.min(resourceThreshold, limit) && */ allBuilders.size() < limit) {
                 actionMap.put(builderBase.getId(), new EntityAction(null, new BuildAction(EntityType.BUILDER_UNIT, new Vec2Int(builderBase.getPosition().getX() + 5, builderBase.getPosition().getY())), null, null));
             } else {
                 actionMap.put(builderBase.getId(), new EntityAction(null, null, null,null));
@@ -200,8 +221,8 @@ public class MyStrategy {
 
 //        buildWorkers.removeIf(w -> !allBuilders.contains(w));
 
-        if (busyBuilders.size() < allBuilders.size() / 3 && resourceCount > 25 && (populationMax - populationUse) < 10) {
-            var place = findBestPlaceForHouse();
+        if (needMoreWarriors && !slotsEnough || !needMoreWarriors && busyBuilders.size() < allBuilders.size() / 3 && resourceCount > 25 && (populationMax - populationUse) < 10) {
+            var place = findBestPlaceForBuild(getPlacesForHouse(playerView.getCurrentTick()), playerView.getEntityProperties().get(EntityType.HOUSE).getMaxHealth(), 3);
             if (place != null) {
                 List<BuildPosition> builders = new ArrayList<>();
                 Set<Vec2Int> occupiedPositions = new HashSet<>();
@@ -227,6 +248,27 @@ public class MyStrategy {
 //                }
 //            });
         }
+
+
+//        if (!needMoreWarriors && busyBuilders.size() < allBuilders.size() / 3 && resourceCount > 25 && playerView.getCurrentTick() > 200) {
+//            var place = findBestPlaceForBuild(getAllCornersForTurret(), playerView.getEntityProperties().get(EntityType.TURRET).getMaxHealth(), 2);
+//            if (place != null) {
+//                List<BuildPosition> builders = new ArrayList<>();
+//                Set<Vec2Int> occupiedPositions = new HashSet<>();
+//                place.getBuilders().forEach(b -> {
+//                    if (!busyBuilders.contains(b)) {
+//                        var builderPos = findClosestBuildPosition(place.getBuildCorner(), 2, playerView.getMapSize(), occupiedPositions);
+//                        if (builderPos != null) {
+//                            builders.add(new BuildPosition(b, builderPos));
+//                            occupiedPositions.add(builderPos);
+//                        }
+//                    }
+//                });
+//                if (builders.size() > 0) {
+//                    buildTasks.add(new BuildTask(place.getBuildCorner(), builders, EntityType.TURRET));
+//                }
+//            }
+//        }
 
 //        if (!buildTasks.isEmpty() && buildWorkers.size() <= BUILDERS_MAX) {
 //            while (buildWorkers.size() < Math.min(resourceWorkers.size() / 4,  BUILDERS_MAX)) {
@@ -255,12 +297,12 @@ public class MyStrategy {
             switch (t.getState()) {
                 case MOVING:
                     t.getBuilders().forEach(b -> {
-                        actionMap.put(b.getEntity().getId(), new EntityAction(new MoveAction(b.getBuildPosition(), false, false), new BuildAction(EntityType.HOUSE, t.getBuildCorner()), null, null));
+                        actionMap.put(b.getEntity().getId(), new EntityAction(new MoveAction(b.getBuildPosition(), false, false), new BuildAction(t.getType(), t.getBuildCorner()), null, null));
                     });
                     break;
                 case REPAIRING:
                     t.getBuilders().forEach(b -> {
-                        actionMap.put(b.getEntity().getId(), new EntityAction(new MoveAction(b.getBuildPosition(), false, false), new BuildAction(EntityType.HOUSE, t.getBuildCorner()), null, new RepairAction(t.getBuildId())));
+                        actionMap.put(b.getEntity().getId(), new EntityAction(new MoveAction(b.getBuildPosition(), false, false), new BuildAction(t.getType(), t.getBuildCorner()), null, new RepairAction(t.getBuildId())));
                     });
                     break;
             }
@@ -464,16 +506,27 @@ public class MyStrategy {
         return Math.abs(a.getX() - b.getX()) + Math.abs(a.getY() - b.getY());
     }
 
-    private FindingPositionResult findBestPlaceForHouse() {
-        List<FindingPositionResult> results = new ArrayList<>();
-        var planPlaces = findPlaceForHouse();
+    private List<Vec2Int> getPlacesForHouse(int tick) {
+        List<Vec2Int> planPlaces;
+        if (tick > 400) {
+            planPlaces = getAllCornersForHouse();
+        } else {
+            planPlaces = findPlaceForHouse();
+        }
         if (planPlaces.isEmpty()) {
             planPlaces = getAllCornersForHouse();
         }
+
+        return planPlaces;
+    }
+
+    private FindingPositionResult findBestPlaceForBuild(List<Vec2Int> planPlaces, int maxHP, int buildersLimit) {
+        List<FindingPositionResult> results = new ArrayList<>();
+
         planPlaces.forEach(c -> {
             Map<Entity, Integer> distanceMap = new HashMap<>();
             allBuilders.forEach(b -> distanceMap.put(b, distance(b.getPosition(), new Vec2Int(c.getX() + 1, c.getY() + 1))));
-            List<Entity> closest = distanceMap.entrySet().stream().sorted(Map.Entry.comparingByValue()).limit(3).map(Entry::getKey).collect(Collectors.toList());
+            List<Entity> closest = distanceMap.entrySet().stream().sorted(Map.Entry.comparingByValue()).limit(buildersLimit).map(Entry::getKey).collect(Collectors.toList());
             for (int k = 0; k < closest.size(); k++) {
                 var ticks = 0;
                 int[] modifyDistance = new int[k+1];
@@ -481,7 +534,7 @@ public class MyStrategy {
                     modifyDistance[k1] = distanceMap.get(closest.get(k1));
                 }
                 var houseHP = 1;
-                while (houseHP <= 50) {
+                while (houseHP <= maxHP) {
                     for (int k2 = 0; k2 <= k; k2++) {
                         if (modifyDistance[k2] > 0) {
                             modifyDistance[k2]--;
@@ -519,6 +572,27 @@ public class MyStrategy {
         return result;
     }
 
+    private List<Vec2Int> getAllCornersForTurret() {
+        var result = new ArrayList<Vec2Int>();
+        for (int x = 18; x < 30; x++) {
+            for (int y = 18; y < 30; y++) {
+                if (buildPlace[x][y]) {
+                    var placeIsFree = true;
+                    for (int x1 = x; x1 < x + 2; x1++) {
+                        for (int y1 = y; y1 < y + 2; y1++) {
+                            placeIsFree = placeIsFree && buildPlace[x1][y1];
+                        }
+                    }
+                    if (placeIsFree) {
+                        result.add(new Vec2Int(x, y));
+                    }
+                }
+            }
+        }
+
+        return result;
+    }
+
     private Vec2Int defineCorner(Vec2Int pos) {
         if (pos.getX() > 40 && pos.getY() > 40) {
             return new Vec2Int(79, 79);
@@ -529,17 +603,66 @@ public class MyStrategy {
         }
     }
 
+    private void clearDangerField() {
+        for (int x = 0; x < 80; x++) {
+            for (int y = 0; y < 80; y++) {
+                dangerField[x][y] = false;
+            }
+        }
+    }
+
+    private void updateDangerField(Entity entity) {
+        var range = entity.getEntityType() == EntityType.MELEE_UNIT ? 2 : 6;
+        var entityX = entity.getPosition().getX();
+        var entityY = entity.getPosition().getY();
+        for (int x = Math.max(entityX - range, 0); x <= Math.min(entityX + range, 79); x++) {
+            var diff = range - Math.abs(entityX - x);
+            for (int y = Math.max(entityY - diff, 0); y <= Math.min(entityY + diff, 79); y++) {
+                dangerField[x][y] = true;
+            }
+        }
+    }
+
+    private Vec2Int findNearestFreeCell(Entity entity) {
+        var x = entity.getPosition().getX();
+        var y = entity.getPosition().getY();
+
+        var xUp = Math.min(x + 1, 79);
+        var xDown = Math.max(x - 1, 0);
+        var yUp = Math.min(y + 1, 79);
+        var yDown = Math.max(y - 1, 0);
+
+        if (entities[xUp][y] == null && !dangerField[xUp][y]) {
+            return new Vec2Int(xUp, y);
+        }
+        if (entities[xDown][y] == null && !dangerField[xDown][y]) {
+            return new Vec2Int(xDown, y);
+        }
+        if (entities[x][yUp] == null && !dangerField[x][yUp]) {
+            return new Vec2Int(x, yUp);
+        }
+        if (entities[x][yDown] == null && !dangerField[x][yDown]) {
+            return new Vec2Int(x,yDown);
+        }
+
+        return null;
+    }
+
+    private boolean inDanger(Entity entity) {
+        return dangerField[entity.getPosition().getX()][entity.getPosition().getY()];
+    }
+
     public void debugUpdate(PlayerView playerView, DebugInterface debugInterface) {
         debugInterface.send(new DebugCommand.Clear());
-        var text = new PlacedText(new ColoredVertex(null, new Vec2Float(200f, 30f), new Color(1f, 0f, 0f, 1f)), String.valueOf(avgResources), 0.5f, 70);
-        var text2 = new PlacedText(new ColoredVertex(null, new Vec2Float(200f, 90f), new Color(1f, 0f, 0f, 1f)), String.valueOf(Math.round((float) playerView.getCurrentTick() / 10)), 0.5f, 70);
-        debugInterface.send(new Add(text));
-        debugInterface.send(new Add(text2));
+//        var text = new PlacedText(new ColoredVertex(null, new Vec2Float(200f, 30f), new Color(1f, 0f, 0f, 1f)), String.valueOf(allBuilders.size()), 0.5f, 70);
+//        var text2 = new PlacedText(new ColoredVertex(null, new Vec2Float(200f, 90f), new Color(1f, 0f, 0f, 1f)), String.valueOf(playerView.getCurrentTick()), 0.5f, 70);
+//        debugInterface.send(new Add(text));
+//        debugInterface.send(new Add(text2));
 //
-//        for (int x = 0; x < 30; x++) {
-//            for (int y = 0; y < 30; y++) {
+//        for (int x = 0; x < 80; x++) {
+//            for (int y = 0; y < 80; y++) {
 //                ColoredVertex[] vertices = new ColoredVertex[3];
-//                var color = buildPlace[x][y] ? new Color(0, 1, 0, 0.5f) : new Color(1, 0, 0, 0.5f);
+//                var color = dangerField[x][y] ? new Color(0, 1, 0, 0.5f) : new Color(1, 0, 0, 0.5f);
 //                vertices[0] = new ColoredVertex(new Vec2Float(x, y + 1), new Vec2Float(0f, 0f), color);
 //                vertices[1] = new ColoredVertex(new Vec2Float(x + 1, y + 1), new Vec2Float(0f, 0f), color);
 //                vertices[2] = new ColoredVertex(new Vec2Float(x + 0.5f, y), new Vec2Float(0f, 0f), color);
