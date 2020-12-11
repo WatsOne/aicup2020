@@ -83,6 +83,7 @@ public class MyStrategy {
 
         Entity builderBase = null;
         Entity meleeBase = null;
+        Entity rangerBase = null;
 
         for (Entity entity : playerView.getEntities()) {
             if (entity.getPlayerId() == null) {
@@ -165,11 +166,7 @@ public class MyStrategy {
                     builderBase = entity;
                     break;
                 case RANGED_BASE:
-                    if (buildTasks.size() * 50 < resourceCount) {
-                        actionMap.put(entity.getId(), new EntityAction(null, new BuildAction(EntityType.RANGED_UNIT, new Vec2Int(entity.getPosition().getX() + 5, entity.getPosition().getY())), null, null));
-                    } else {
-                        actionMap.put(entity.getId(), new EntityAction(null, null, null,null));
-                    }
+                    rangerBase = entity;
                     break;
                 case MELEE_BASE:
                     meleeBase = entity;
@@ -211,15 +208,32 @@ public class MyStrategy {
             }
         }
 
+        if (rangerBase != null) {
+            if (needMoreWarriors || buildTasks.size() * 50 < resourceCount) {
+                actionMap.put(rangerBase.getId(), new EntityAction(null, new BuildAction(EntityType.RANGED_UNIT, findClosestSpawnPosition(rangerBase.getPosition())), null, null));
+            } else {
+                actionMap.put(rangerBase.getId(), new EntityAction(null, null, null,null));
+            }
+
+            if (rangerBase.getHealth() < playerView.getEntityProperties().get(EntityType.RANGED_BASE).getMaxHealth()) {
+                repair(rangerBase.getPosition(), busyBuilders, playerView, EntityType.RANGED_BASE);
+            }
+        }
+
         if (meleeBase != null) {
-            if (buildTasks.size() * 50 < resourceCount && allMelee.size() < allRangers.size() / 3) {
-                actionMap.put(meleeBase.getId(), new EntityAction(null, new BuildAction(EntityType.MELEE_UNIT, new Vec2Int(meleeBase.getPosition().getX() + 5, meleeBase.getPosition().getY())), null, null));
+            if (rangerBase == null || needMoreWarriors || buildTasks.size() * 50 < resourceCount && allMelee.size() < allRangers.size() / 3) {
+                actionMap.put(meleeBase.getId(), new EntityAction(null, new BuildAction(EntityType.MELEE_UNIT, findClosestSpawnPosition(meleeBase.getPosition())), null, null));
             } else {
                 actionMap.put(meleeBase.getId(), new EntityAction(null, null, null,null));
+            }
+
+            if (meleeBase.getHealth() < playerView.getEntityProperties().get(EntityType.MELEE_BASE).getMaxHealth()) {
+                repair(meleeBase.getPosition(), busyBuilders, playerView, EntityType.MELEE_BASE);
             }
         }
 
 //        buildWorkers.removeIf(w -> !allBuilders.contains(w));
+
 
         if (needMoreWarriors && !slotsEnough || !needMoreWarriors && busyBuilders.size() < allBuilders.size() / 3 && resourceCount > 25 && (populationMax - populationUse) < 10) {
             var place = findBestPlaceForBuild(getPlacesForHouse(playerView.getCurrentTick()), playerView.getEntityProperties().get(EntityType.HOUSE).getMaxHealth(), 3);
@@ -403,6 +417,26 @@ public class MyStrategy {
         return null;
     }
 
+    private Vec2Int findClosestSpawnPosition(Vec2Int buildPosition) {
+        var x = buildPosition.getX() + 5;
+        for (int y = buildPosition.getY() + 4; y >= buildPosition.getY(); y--) {
+            var res = new Vec2Int(x, y);
+            if (entities[x][y] == null) {
+                return res;
+            }
+        }
+
+        var y = buildPosition.getX() + 5;
+        for (x = buildPosition.getX() + 4; x >= buildPosition.getX(); x--) {
+            var res = new Vec2Int(x, y);
+            if (entities[x][y] == null) {
+                return res;
+            }
+        }
+
+        return new Vec2Int(0,0);
+    }
+
     private boolean cellIsFree(int x, int y, int mapSize) {
         if (x >= 0 && x < mapSize && y >= 0 && y < mapSize) {
             var entity = entities[x][y];
@@ -411,6 +445,32 @@ public class MyStrategy {
         }
 
         return false;
+    }
+
+    private void repair(Vec2Int position, Set<Entity> busyBuilders, PlayerView playerView, EntityType type) {
+        var exist = buildTasks.stream().filter(b -> b.getType() == type).findFirst();
+        if (exist.isPresent()) {
+            return;
+        }
+
+        List<BuildPosition> builders = new ArrayList<>();
+        Set<Vec2Int> occupiedPositions = new HashSet<>();
+
+        Map<Entity, Integer> distanceMap = new HashMap<>();
+        allBuilders.forEach(b -> distanceMap.put(b, distance(b.getPosition(), new Vec2Int(position.getX() + 2, position.getY() + 2))));
+        List<Entity> closest = distanceMap.entrySet().stream().sorted(Map.Entry.comparingByValue()).limit(3).map(Entry::getKey).collect(Collectors.toList());
+        closest.forEach(b -> {
+            if (!busyBuilders.contains(b)) {
+                var builderPos = findClosestBuildPosition(position, 5, playerView.getMapSize(), occupiedPositions);
+                if (builderPos != null) {
+                    builders.add(new BuildPosition(b, builderPos));
+                    occupiedPositions.add(builderPos);
+                }
+            }
+        });
+        if (builders.size() > 0) {
+            buildTasks.add(new BuildTask(position, builders, type));
+        }
     }
 
     private List<Vec2Int> findPlaceForHouse() {
@@ -612,7 +672,7 @@ public class MyStrategy {
     }
 
     private void updateDangerField(Entity entity) {
-        var range = entity.getEntityType() == EntityType.MELEE_UNIT ? 2 : 6;
+        var range = entity.getEntityType() == EntityType.MELEE_UNIT ? 3 : 7;
         var entityX = entity.getPosition().getX();
         var entityY = entity.getPosition().getY();
         for (int x = Math.max(entityX - range, 0); x <= Math.min(entityX + range, 79); x++) {
@@ -632,16 +692,16 @@ public class MyStrategy {
         var yUp = Math.min(y + 1, 79);
         var yDown = Math.max(y - 1, 0);
 
-        if (entities[xUp][y] == null && !dangerField[xUp][y]) {
+        if (cellIsFree(xUp, y,80) && !dangerField[xUp][y]) {
             return new Vec2Int(xUp, y);
         }
-        if (entities[xDown][y] == null && !dangerField[xDown][y]) {
+        if (cellIsFree(xDown, y,80) && !dangerField[xDown][y]) {
             return new Vec2Int(xDown, y);
         }
-        if (entities[x][yUp] == null && !dangerField[x][yUp]) {
+        if (cellIsFree(x, yUp,80) && !dangerField[x][yUp]) {
             return new Vec2Int(x, yUp);
         }
-        if (entities[x][yDown] == null && !dangerField[x][yDown]) {
+        if (cellIsFree(x, yDown,80) && !dangerField[x][yDown]) {
             return new Vec2Int(x,yDown);
         }
 
