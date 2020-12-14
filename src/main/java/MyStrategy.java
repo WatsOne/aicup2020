@@ -17,21 +17,14 @@ import model.Action;
 import model.AttackAction;
 import model.AutoAttack;
 import model.BuildAction;
-import model.Color;
-import model.ColoredVertex;
 import model.DebugCommand;
-import model.DebugCommand.Add;
-import model.DebugData.PlacedText;
-import model.DebugData.Primitives;
 import model.Entity;
 import model.EntityAction;
 import model.EntityType;
 import model.MoveAction;
 import model.Player;
 import model.PlayerView;
-import model.PrimitiveType;
 import model.RepairAction;
-import model.Vec2Float;
 import model.Vec2Int;
 
 public class MyStrategy {
@@ -200,9 +193,9 @@ public class MyStrategy {
 
         var resourceThreshold = Math.round((float) playerView.getCurrentTick() / 10) + 12;
         if (builderBase != null) {
-            var limit = playerView.getCurrentTick() < 200 ? 23 : 37;
+            var limit = playerView.getCurrentTick() < 100 ? 15 : playerView.getCurrentTick() < 400 ? 27 : 40;
             if (!needMoreWarriors && /*avgResources < Math.min(resourceThreshold, limit) && */ allBuilders.size() < limit) {
-                actionMap.put(builderBase.getId(), new EntityAction(null, new BuildAction(EntityType.BUILDER_UNIT, new Vec2Int(builderBase.getPosition().getX() + 5, builderBase.getPosition().getY())), null, null));
+                actionMap.put(builderBase.getId(), new EntityAction(null, new BuildAction(EntityType.BUILDER_UNIT,findClosestSpawnPosition(builderBase.getPosition())), null, null));
             } else {
                 actionMap.put(builderBase.getId(), new EntityAction(null, null, null,null));
             }
@@ -218,6 +211,10 @@ public class MyStrategy {
             if (rangerBase.getHealth() < playerView.getEntityProperties().get(EntityType.RANGED_BASE).getMaxHealth()) {
                 repair(rangerBase.getPosition(), busyBuilders, playerView, EntityType.RANGED_BASE);
             }
+        } else {
+            if (resourceCount > 500) {
+                buildBase(EntityType.RANGED_BASE, playerView);
+            }
         }
 
         if (meleeBase != null) {
@@ -229,6 +226,10 @@ public class MyStrategy {
 
             if (meleeBase.getHealth() < playerView.getEntityProperties().get(EntityType.MELEE_BASE).getMaxHealth()) {
                 repair(meleeBase.getPosition(), busyBuilders, playerView, EntityType.MELEE_BASE);
+            }
+        } else {
+            if (resourceCount > 500) {
+                buildBase(EntityType.MELEE_BASE, playerView);
             }
         }
 
@@ -383,6 +384,34 @@ public class MyStrategy {
 //            }
 //        });
 //    }
+
+    private void buildBase(EntityType base, PlayerView playerView) {
+        var exist = buildTasks.stream().anyMatch(t -> t.getType() == base);
+        if (exist) {
+            return;
+        }
+
+        var busyBuilders = buildTasks.stream().flatMap(t -> t.getOnlyBuilders().stream()).collect(Collectors.toSet());
+
+        var size = playerView.getEntityProperties().get(base).getSize();
+        var place = findBestPlaceForBuild(getAllCornersForBuild(size), playerView.getEntityProperties().get(base).getMaxHealth(), 4);
+        if (place != null) {
+            List<BuildPosition> builders = new ArrayList<>();
+            Set<Vec2Int> occupiedPositions = new HashSet<>();
+            place.getBuilders().forEach(b -> {
+                if (!busyBuilders.contains(b)) {
+                    var builderPos = findClosestBuildPosition(place.getBuildCorner(), size, playerView.getMapSize(), occupiedPositions);
+                    if (builderPos != null) {
+                        builders.add(new BuildPosition(b, builderPos));
+                        occupiedPositions.add(builderPos);
+                    }
+                }
+            });
+            if (builders.size() > 0) {
+                buildTasks.add(new BuildTask(place.getBuildCorner(), builders, base));
+            }
+        }
+    }
 
     private Vec2Int findClosestBuildPosition(Vec2Int buildPosition, int size, int mapSize, Set<Vec2Int> occupiedPositions) {
         var y = buildPosition.getY() - 1;
@@ -569,12 +598,12 @@ public class MyStrategy {
     private List<Vec2Int> getPlacesForHouse(int tick) {
         List<Vec2Int> planPlaces;
         if (tick > 400) {
-            planPlaces = getAllCornersForHouse();
+            planPlaces = getAllCornersForBuild(3);
         } else {
             planPlaces = findPlaceForHouse();
         }
         if (planPlaces.isEmpty()) {
-            planPlaces = getAllCornersForHouse();
+            planPlaces = getAllCornersForBuild(3);
         }
 
         return planPlaces;
@@ -611,14 +640,14 @@ public class MyStrategy {
         return results.stream().min(Comparator.comparingInt(FindingPositionResult::getScore)).orElse(null);
     }
 
-    private List<Vec2Int> getAllCornersForHouse() {
+    private List<Vec2Int> getAllCornersForBuild(int size) {
         var result = new ArrayList<Vec2Int>();
         for (int x = 0; x < 36; x++) {
             for (int y = 0; y < 36; y++) {
                 if (buildPlace[x][y]) {
                     var placeIsFree = true;
-                    for (int x1 = x; x1 < x + 3; x1++) {
-                        for (int y1 = y; y1 < y + 3; y1++) {
+                    for (int x1 = x; x1 < x + size; x1++) {
+                        for (int y1 = y; y1 < y + size; y1++) {
                             placeIsFree = placeIsFree && buildPlace[x1][y1];
                         }
                     }
